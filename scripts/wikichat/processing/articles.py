@@ -240,7 +240,6 @@ async def update_article_metadata(vectored_diff: VectoredChunkedArticleDiff) -> 
         new_metadata
     )
 
-    # TODO COmment
     recent_articles: RecentArticles = await RECENT_ARTICLES.update_and_clone(new_metadata)
     await wikichat.utils.wrap_blocking_io(
         lambda x: SUGGESTIONS_COLLECTION.find_one_and_replace(

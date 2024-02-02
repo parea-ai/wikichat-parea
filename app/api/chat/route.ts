@@ -1,31 +1,29 @@
-import { CohereEmbeddings } from "@langchain/cohere";
-import { ChatOpenAI } from "@langchain/openai";
-import { Document } from "@langchain/core/documents";
-import { StringOutputParser } from "@langchain/core/output_parsers";
-import { PromptTemplate } from "@langchain/core/prompts";
-import { 
-  RunnableBranch,
-  RunnableLambda,
-  RunnableMap, 
-  RunnableSequence
-} from "@langchain/core/runnables";
-import {
-  AstraDBVectorStore,
-  AstraLibArgs,
-} from "@langchain/community/vectorstores/astradb";
+import {CohereEmbeddings} from "@langchain/cohere";
+import {ChatOpenAI} from "@langchain/openai";
+import {Document} from "@langchain/core/documents";
+import {StringOutputParser} from "@langchain/core/output_parsers";
+import {PromptTemplate} from "@langchain/core/prompts";
+import {RunnableBranch, RunnableLambda, RunnableMap, RunnableSequence} from "@langchain/core/runnables";
+import {AstraDBVectorStore, AstraLibArgs,} from "@langchain/community/vectorstores/astradb";
 
-import { StreamingTextResponse, Message } from "ai";
+import {Message, StreamingTextResponse} from "ai";
+import {Parea, PareaAILangchainTracer} from "parea-ai";
+
 
 const {
-  ASTRA_DB_APPLICATION_TOKEN,
-  ASTRA_DB_API_ENDPOINT,
-  COHERE_API_KEY,
-  OPENAI_API_KEY,
+    ASTRA_DB_APPLICATION_TOKEN,
+    ASTRA_DB_API_ENDPOINT,
+    COHERE_API_KEY,
+    OPENAI_API_KEY,
+    PAREA_API_KEY,
 } = process.env;
 
+new Parea(PAREA_API_KEY);
+const handler = new PareaAILangchainTracer();
+
 interface ChainInput {
-  chat_history: string;
-  question: string;
+    chat_history: string;
+    question: string;
 }
 
 const condenseQuestionTemplate = `Given the following chat history and a follow up question, If the follow up question references previous parts of the chat rephrase the follow up question to be a standalone question if not use the follow up question as the standalone question.
@@ -38,7 +36,7 @@ Follow Up Question: {question}
 Standalone question:`;
 
 const condenseQuestionPrompt = PromptTemplate.fromTemplate(
-  condenseQuestionTemplate,
+    condenseQuestionTemplate,
 );
 
 const questionTemplate = `You are an AI assistant answering questions about anything from Wikipedia the context will provide you with the most relevant data from wikipedia including the pages title, url, and page content.
@@ -58,116 +56,116 @@ QUESTION: {question}
 const prompt = PromptTemplate.fromTemplate(questionTemplate);
 
 const combineDocumentsFn = (docs: Document[]) => {
-  const serializedDocs = docs.map((doc) => `Title: ${doc.metadata.title}
+    const serializedDocs = docs.map((doc) => `Title: ${doc.metadata.title}
 URL: ${doc.metadata.url}
 Content: ${doc.pageContent}`);
 
-  return serializedDocs.join("\n\n");
+    return serializedDocs.join("\n\n");
 };
 
 const formatVercelMessages = (chatHistory: Message[]) => {
-  const formattedDialogueTurns = chatHistory.map((message) => {
-    if (message.role === "user") {
-      return `Human: ${message.content}`;
-    } else if (message.role === "assistant") {
-      return `Assistant: ${message.content}`;
-    } else {
-      return `${message.role}: ${message.content}`;
-    }
-  });
-  return formattedDialogueTurns.join("\n");
+    const formattedDialogueTurns = chatHistory.map((message) => {
+        if (message.role === "user") {
+            return `Human: ${message.content}`;
+        } else if (message.role === "assistant") {
+            return `Assistant: ${message.content}`;
+        } else {
+            return `${message.role}: ${message.content}`;
+        }
+    });
+    return formattedDialogueTurns.join("\n");
 };
 
 export async function POST(req: Request) {
-  try {
-    const {messages, llm} = await req.json();
-    const previousMessages = messages.slice(0, -1);
-    const latestMessage = messages[messages?.length - 1]?.content;
+    try {
+        const {messages, llm} = await req.json();
+        const previousMessages = messages.slice(0, -1);
+        const latestMessage = messages[messages?.length - 1]?.content;
 
-    const embeddings = new CohereEmbeddings({
-      apiKey: COHERE_API_KEY,
-      inputType: "search_query",
-      model: "embed-english-v3.0",
-    });
-    
-    const chatModel = new ChatOpenAI({
-      temperature: 0.5,
-      openAIApiKey: OPENAI_API_KEY,
-      modelName: llm ?? "gpt-4",
-      streaming: true,
-    });
-    
-    const astraConfig: AstraLibArgs = {
-      token: ASTRA_DB_APPLICATION_TOKEN,
-      endpoint: ASTRA_DB_API_ENDPOINT,
-      collection: "article_embeddings",
-      contentKey: "content",
-    };
+        const embeddings = new CohereEmbeddings({
+            apiKey: COHERE_API_KEY,
+            inputType: "search_query",
+            model: "embed-english-v3.0",
+        });
 
-    const vectorStore = new AstraDBVectorStore(embeddings, astraConfig);
+        const chatModel = new ChatOpenAI({
+            temperature: 0.5,
+            openAIApiKey: OPENAI_API_KEY,
+            modelName: llm ?? "gpt-4",
+            streaming: true,
+        });
 
-    await vectorStore.initialize();
+        const astraConfig: AstraLibArgs = {
+            token: ASTRA_DB_APPLICATION_TOKEN,
+            endpoint: ASTRA_DB_API_ENDPOINT,
+            collection: "article_embeddings",
+            contentKey: "content",
+        };
 
-    const astraRetriever = vectorStore.asRetriever();
+        const vectorStore = new AstraDBVectorStore(embeddings, astraConfig);
 
-    const hasChatHistoryCheck = RunnableLambda.from(
-      (input: ChainInput) => input.chat_history.length > 0
-    ).withConfig({ runName: "hasChatHistoryCheck"});
+        await vectorStore.initialize();
 
-    const chatHistoryQuestionChain = RunnableSequence.from([
-      condenseQuestionPrompt,
-      chatModel,
-      new StringOutputParser(),
-    ]).withConfig({ runName: "chatHistoryQuestionChain"});
+        const astraRetriever = vectorStore.asRetriever();
 
-    const noChatHistoryQuestionChain = RunnableLambda.from(
-      (input: ChainInput) => input.question
-    ).withConfig({ runName: "noChatHistoryQuestionChain"});
+        const hasChatHistoryCheck = RunnableLambda.from(
+            (input: ChainInput) => input.chat_history.length > 0
+        ).withConfig({runName: "hasChatHistoryCheck"});
 
-    const condenseChatBranch = RunnableBranch.from([
-      [hasChatHistoryCheck, chatHistoryQuestionChain],
-      noChatHistoryQuestionChain,
-    ]).withConfig({ runName: "condenseChatBranch"});
+        const chatHistoryQuestionChain = RunnableSequence.from([
+            condenseQuestionPrompt,
+            chatModel,
+            new StringOutputParser(),
+        ]).withConfig({runName: "chatHistoryQuestionChain"});
 
-    const astraRetrieverChain = astraRetriever.pipe(combineDocumentsFn)
-      .withConfig({ runName: "astraRetrieverChain"});
+        const noChatHistoryQuestionChain = RunnableLambda.from(
+            (input: ChainInput) => input.question
+        ).withConfig({runName: "noChatHistoryQuestionChain"});
 
-    const mapQuestionAndContext = RunnableMap.from({
-      question: (input: string) => input,
-      context: astraRetrieverChain
-    }).withConfig({ runName: "mapQuestionAndContext"});
+        const condenseChatBranch = RunnableBranch.from([
+            [hasChatHistoryCheck, chatHistoryQuestionChain],
+            noChatHistoryQuestionChain,
+        ]).withConfig({runName: "condenseChatBranch"});
 
-    const chain = RunnableSequence.from([
-      condenseChatBranch,
-      mapQuestionAndContext,
-      prompt,
-      chatModel,
-      new StringOutputParser(),
-    ]).withConfig({ runName: "chatChain"});
+        const astraRetrieverChain = astraRetriever.pipe(combineDocumentsFn)
+            .withConfig({runName: "astraRetrieverChain"});
 
-    let runIdResolver;
-    const runIdPromise = new Promise<string>((resolve) => {
-      runIdResolver = resolve;
-    });
-    const stream = await chain.stream({
-      chat_history: formatVercelMessages(previousMessages),
-      question: latestMessage,
-    }, {
-      callbacks: [{
-        handleChainStart(_chain, _inputs, runId) {
-          runIdResolver(runId);
-        },
-      }]
-    });
-    const runId = await runIdPromise;
+        const mapQuestionAndContext = RunnableMap.from({
+            question: (input: string) => input,
+            context: astraRetrieverChain
+        }).withConfig({runName: "mapQuestionAndContext"});
 
-    return new StreamingTextResponse(stream, {
-      headers: {
-        "x-langsmith-run-id": runId ?? "",
-      }
-    });
-  } catch (e) {
-    console.log(e)
-    throw e;
-  }
+        const chain = RunnableSequence.from([
+            condenseChatBranch,
+            mapQuestionAndContext,
+            prompt,
+            chatModel,
+            new StringOutputParser(),
+        ]).withConfig({runName: "chatChain", callbacks: [handler]});
+
+        let runIdResolver;
+        const runIdPromise = new Promise<string>((resolve) => {
+            runIdResolver = resolve;
+        });
+        const stream = await chain.stream({
+            chat_history: formatVercelMessages(previousMessages),
+            question: latestMessage,
+        }, {
+            callbacks: [{
+                handleChainStart(_chain, _inputs, runId) {
+                    runIdResolver(runId);
+                },
+            }]
+        });
+        const runId = await runIdPromise;
+
+        return new StreamingTextResponse(stream, {
+            headers: {
+                "x-langsmith-run-id": runId ?? "",
+            }
+        });
+    } catch (e) {
+        console.log(e)
+        throw e;
+    }
 }

@@ -43,7 +43,7 @@ options:
   -h, --help            show this help message and exit
 ```
 
-The `load`, `listen`, and `load-and-listen` commands are used to ingest articles, the remianing commands are used to search the database for testing outside of the Next.js application. 
+The `load`, `listen`, and `load-and-listen` commands are used to ingest articles, the remaining commands are used to search the database for testing outside the Next.js application. 
 
 The most useful command is `load-and-listen`, which can be used without any parameters. Like all commands you can get a list of the available options using the `--help` flag.
 
